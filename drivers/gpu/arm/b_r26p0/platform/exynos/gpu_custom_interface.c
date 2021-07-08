@@ -19,8 +19,18 @@
 
 #include <linux/fb.h>
 
+#include <linux/sysfs_helpers.h>
+
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
 #include "exynos_tmu.h"
+#endif
+
+#ifdef CONFIG_SOC_EXYNOS7885
+#define GPU_MAX_VOLT		1150000	/*Max voltage in uV of GPU according last_kmsg log*/
+#define GPU_MIN_VOLT		600000		/*Min voltage in uV of GPU according last_kmsg log*/
+#define GPU_VOLT_STEP		6250
+#else
+#error "Please define gpu voltage ranges for current SoC."
 #endif
 
 #include "mali_kbase_platform.h"
@@ -35,14 +45,13 @@
 #ifdef CONFIG_MALI_RT_PM
 #include <soc/samsung/exynos-pd.h>
 #endif
-#include <linux/sysfs_helpers.h>
-#ifdef CONFIG_SOC_EXYNOS7885
-#define GPU_MAX_VOLT		1100000
-#define GPU_MIN_VOLT		300000
-#define GPU_VOLT_STEP		6250
-#else
-#error "Please define gpu voltage ranges for current SoC."
+
+#ifdef CONFIG_MALI_CAMERA_EXT_BTS
+#include <soc/samsung/bts.h>
 #endif
+
+#include "device/mali_kbase_device.h"
+
 extern struct kbase_device *pkbdev;
 
 int gpu_pmqos_dvfs_min_lock(int level)
@@ -68,6 +77,8 @@ int gpu_pmqos_dvfs_min_lock(int level)
 static ssize_t show_clock(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
+
+#ifdef CONFIG_MALI_DVFS
 	int clock = 0;
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
@@ -99,6 +110,7 @@ static ssize_t show_clock(struct device *dev, struct device_attribute *attr, cha
 		buf[PAGE_SIZE-1] = '\0';
 		ret = PAGE_SIZE-1;
 	}
+#endif /* CONFIG_MALI_DVFS */
 
 	return ret;
 }
@@ -245,6 +257,7 @@ static ssize_t show_asv_table(struct device *dev, struct device_attribute *attr,
 
 	return ret;
 }
+
 static ssize_t show_volt_table(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
@@ -254,12 +267,12 @@ static ssize_t show_volt_table(struct device *dev, struct device_attribute *attr
 	if (!platform)
 		return -ENODEV;
 
-	max = gpu_dvfs_get_stock_level(platform->gpu_max_clock);
-	min = gpu_dvfs_get_stock_level(platform->gpu_min_clock);
+	max = gpu_dvfs_get_level(platform->gpu_max_clock);
+	min = gpu_dvfs_get_level(platform->gpu_min_clock);
 	pr_len = (size_t)((PAGE_SIZE - 2) / (min-max));
 
 	for (i = max; i <= min; i++) {
-		count += snprintf(&buf[count], pr_len, "%d %d\n",
+		count += snprintf(&buf[count], pr_len, "%d %d\n", 
 				platform->table[i].clock,
 				platform->table[i].voltage);
 	}
@@ -270,8 +283,8 @@ static ssize_t show_volt_table(struct device *dev, struct device_attribute *attr
 static ssize_t set_volt_table(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
-	int max = gpu_dvfs_get_stock_level(platform->gpu_max_clock);
-	int min = gpu_dvfs_get_stock_level(platform->gpu_min_clock);
+	int max = gpu_dvfs_get_level(platform->gpu_max_clock);
+	int min = gpu_dvfs_get_level(platform->gpu_min_clock);
 	int i, tokens, rest, target;
 	int t[min - max];
 	unsigned long flags;
@@ -292,14 +305,14 @@ static ssize_t set_volt_table(struct device *dev, struct device_attribute *attr,
 	spin_lock_irqsave(&platform->gpu_dvfs_spinlock, flags);
 
 	if (tokens == 2 && target > -1) {
-		if ((rest = t[1] % GPU_VOLT_STEP) != 0)
+		if ((rest = t[1] % GPU_VOLT_STEP) != 0) 
 			t[1] += GPU_VOLT_STEP - rest;
 
 		sanitize_min_max(t[1], GPU_MIN_VOLT, GPU_MAX_VOLT);
 		platform->table[target].voltage = t[1];
 	} else {
 		for (i = 0; i < tokens; i++) {
-			if ((rest = t[i] % GPU_VOLT_STEP) != 0)
+			if ((rest = t[i] % GPU_VOLT_STEP) != 0) 
 				t[i] += GPU_VOLT_STEP - rest;
 
 			sanitize_min_max(t[i], GPU_MIN_VOLT, GPU_MAX_VOLT);
@@ -307,11 +320,12 @@ static ssize_t set_volt_table(struct device *dev, struct device_attribute *attr,
 		}
 	}
 
-	//ipa_update();
 	spin_unlock_irqrestore(&platform->gpu_dvfs_spinlock, flags);
 
 	return count;
 }
+
+#ifdef CONFIG_MALI_DVFS
 static int gpu_get_dvfs_table(struct exynos_context *platform, char *buf, size_t buf_size)
 {
 	int i, cnt = 0;
@@ -329,10 +343,13 @@ static int gpu_get_dvfs_table(struct exynos_context *platform, char *buf, size_t
 
 	return cnt;
 }
+#endif
 
 static ssize_t show_dvfs_table(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
+
+#ifdef CONFIG_MALI_DVFS
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
 	if (!platform)
@@ -347,6 +364,7 @@ static ssize_t show_dvfs_table(struct device *dev, struct device_attribute *attr
 		buf[PAGE_SIZE-1] = '\0';
 		ret = PAGE_SIZE-1;
 	}
+#endif
 
 	return ret;
 }
@@ -354,6 +372,8 @@ static ssize_t show_dvfs_table(struct device *dev, struct device_attribute *attr
 static ssize_t show_time_in_state(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
+
+#ifdef CONFIG_MALI_DVFS
 	int i;
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
@@ -373,6 +393,7 @@ static ssize_t show_time_in_state(struct device *dev, struct device_attribute *a
 		buf[PAGE_SIZE-1] = '\0';
 		ret = PAGE_SIZE-1;
 	}
+#endif
 
 	return ret;
 }
@@ -512,6 +533,7 @@ static ssize_t set_governor(struct device *dev, struct device_attribute *attr, c
 
 	return count;
 }
+
 static ssize_t show_gpu_throttling1(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
@@ -548,9 +570,9 @@ static ssize_t set_gpu_throttling1(struct device *dev, struct device_attribute *
 		return -ENOENT;
 	}
 
-	if ((throttling1 < platform->gpu_min_clock) || (throttling1 > platform->gpu_max_clock)) {
-		    GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling1);
-		    return -ENOENT;
+	if ((throttling1 < platform->gpu_min_clock_limit) || (throttling1 > platform->gpu_max_clock_limit)) {
+		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling1);
+		return -ENOENT;
 	}
 
 	platform->tmu_lock_clk[THROTTLING1] = throttling1;
@@ -594,47 +616,7 @@ static ssize_t set_gpu_throttling2(struct device *dev, struct device_attribute *
 		return -ENOENT;
 	}
 
-
-	return count;
-}
-
-static ssize_t show_gpu_throttling2(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	ssize_t ret = 0;
-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
-
-	if (!platform)
-		return -ENODEV;
-
-	ret += snprintf(buf+ret, PAGE_SIZE-ret, "%d", platform->tmu_lock_clk[THROTTLING2]);
-
-	if (ret < PAGE_SIZE - 1) {
-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
-	} else {
-		buf[PAGE_SIZE-2] = '\n';
-		buf[PAGE_SIZE-1] = '\0';
-		ret = PAGE_SIZE-1;
-	}
-
-	return ret;
-}
-
-static ssize_t set_gpu_throttling2(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int ret, throttling2;
-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
-
-	if (!platform)
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 0, &throttling2);
-
-	if (ret) {
-		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: invalid value\n", __func__);
-		return -ENOENT;
-	}
-
-	if ((throttling2 < platform->gpu_min_clock) || (throttling2 > platform->gpu_max_clock)) {
+	if ((throttling2 < platform->gpu_min_clock_limit) || (throttling2 > platform->gpu_max_clock_limit)) {
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling2);
 		return -ENOENT;
 	}
@@ -680,7 +662,7 @@ static ssize_t set_gpu_throttling3(struct device *dev, struct device_attribute *
 		return -ENOENT;
 	}
 
-	if ((throttling3 < platform->gpu_min_clock) || (throttling3 > platform->gpu_max_clock)) {
+	if ((throttling3 < platform->gpu_min_clock_limit) || (throttling3 > platform->gpu_max_clock_limit)) {
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling3);
 		return -ENOENT;
 	}
@@ -708,7 +690,7 @@ static ssize_t show_gpu_throttling4(struct device *dev, struct device_attribute 
 		ret = PAGE_SIZE-1;
 	}
 
-    return ret;
+	return ret;
 }
 
 static ssize_t set_gpu_throttling4(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -726,7 +708,7 @@ static ssize_t set_gpu_throttling4(struct device *dev, struct device_attribute *
 		return -ENOENT;
 	}
 
-	if ((throttling4 < platform->gpu_min_clock) || (throttling4 > platform->gpu_max_clock)) {
+	if ((throttling4 < platform->gpu_min_clock_limit) || (throttling4 > platform->gpu_max_clock_limit)) {
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling4);
 		return -ENOENT;
 	}
@@ -735,57 +717,11 @@ static ssize_t set_gpu_throttling4(struct device *dev, struct device_attribute *
 
 	return count;
 }
-static ssize_t show_gpu_throttling5(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	ssize_t ret = 0;
-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
-
-	if (!platform)
-		return -ENODEV;
-
-	ret += snprintf(buf+ret, PAGE_SIZE-ret, "%d", platform->tmu_lock_clk[THROTTLING5]);
-
-	if (ret < PAGE_SIZE - 1) {
-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
-	} else {
-		buf[PAGE_SIZE-2] = '\n';
-		buf[PAGE_SIZE-1] = '\0';
-		ret = PAGE_SIZE-1;
-	}
-
-    return ret;
-}
-
-static ssize_t set_gpu_throttling5(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	int ret, throttling5;
-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
-
-	if (!platform)
-		return -ENODEV;
-
-	ret = kstrtoint(buf, 0, &throttling5);
-
-	if (ret) {
-		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: invalid value\n", __func__);
-		return -ENOENT;
-	}
-
-	if ((throttling5 < platform->gpu_min_clock) || (throttling5 > platform->gpu_max_clock)) {
-		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, throttling5);
-		return -ENOENT;
-	}
-
-	platform->tmu_lock_clk[THROTTLING5] = throttling5;
-
-	return count;
-}
-
 
 static ssize_t show_gpu_tripping(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	    ssize_t ret = 0;
-	    struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
+	ssize_t ret = 0;
+	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
 	if (!platform)
 		return -ENODEV;
@@ -800,15 +736,16 @@ static ssize_t show_gpu_tripping(struct device *dev, struct device_attribute *at
 		ret = PAGE_SIZE-1;
 	}
 
-    return ret;
+	return ret;
 }
+
 static ssize_t set_gpu_tripping(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	int ret, tripping;
 	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
 
 	if (!platform)
-	    return -ENODEV;
+		return -ENODEV;
 
 	ret = kstrtoint(buf, 0, &tripping);
 
@@ -817,7 +754,7 @@ static ssize_t set_gpu_tripping(struct device *dev, struct device_attribute *att
 		return -ENOENT;
 	}
 
-	if ((tripping < platform->gpu_min_clock) || (tripping > platform->gpu_max_clock)) {
+	if ((tripping < platform->gpu_min_clock_limit) || (tripping > platform->gpu_max_clock_limit)) {
 		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: out of range (%d)\n", __func__, tripping);
 		return -ENOENT;
 	}
@@ -826,6 +763,7 @@ static ssize_t set_gpu_tripping(struct device *dev, struct device_attribute *att
 
 	return count;
 }
+
 static ssize_t show_max_lock_status(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
@@ -1545,28 +1483,30 @@ static ssize_t set_trace_level(struct device *dev, struct device_attribute *attr
 	return count;
 }
 
-extern void kbasep_trace_format_msg(struct kbase_trace *trace_msg, char *buffer, int len);
+extern void kbasep_ktrace_format_msg(struct kbase_ktrace_msg *trace_msg, char *buffer, int len);
 static ssize_t show_trace_dump(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
 	unsigned long flags;
 	u32 start, end;
 
-	spin_lock_irqsave(&pkbdev->trace_lock, flags);
-	start = pkbdev->trace_first_out;
-	end = pkbdev->trace_next_in;
+	spin_lock_irqsave(&pkbdev->ktrace.lock, flags);
+	start = pkbdev->ktrace.first_out;
+	end = pkbdev->ktrace.next_in;
 
 	while (start != end) {
-		char buffer[KBASE_TRACE_SIZE];
-		struct kbase_trace *trace_msg = &pkbdev->trace_rbuf[start];
+		char buffer[KBASE_KTRACE_SIZE];
+		struct kbase_ktrace_msg *trace_msg = &pkbdev->ktrace.rbuf[start];
 
-		kbasep_trace_format_msg(trace_msg, buffer, KBASE_TRACE_SIZE);
+		kbasep_ktrace_format_msg(trace_msg, buffer, KBASE_KTRACE_SIZE);
 		ret += snprintf(buf+ret, PAGE_SIZE-ret, "%s\n", buffer);
-		start = (start + 1) & KBASE_TRACE_MASK;
+		if (ret >= PAGE_SIZE - 1)
+			break;
+		start = (start + 1) & KBASE_KTRACE_MASK;
 	}
 
-	spin_unlock_irqrestore(&pkbdev->trace_lock, flags);
-	KBASE_TRACE_CLEAR(pkbdev);
+	spin_unlock_irqrestore(&pkbdev->ktrace.lock, flags);
+	KBASE_KTRACE_CLEAR(pkbdev);
 
 	if (ret < PAGE_SIZE - 1) {
 		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
@@ -1581,7 +1521,7 @@ static ssize_t show_trace_dump(struct device *dev, struct device_attribute *attr
 
 static ssize_t init_trace_dump(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	KBASE_TRACE_CLEAR(pkbdev);
+	KBASE_KTRACE_CLEAR(pkbdev);
 
 	return count;
 }
@@ -1746,6 +1686,57 @@ static ssize_t show_cl_boost_disable(struct device *dev, struct device_attribute
 	return ret;
 }
 #endif
+
+#ifdef CONFIG_MALI_CAMERA_EXT_BTS
+static ssize_t set_camera_ext_bts_scenario(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int camera_ext_bts_scenario = 0;
+	int ret;
+
+	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
+
+	if (!platform)
+		return -ENODEV;
+
+	ret = kstrtoint(buf, 0, &camera_ext_bts_scenario);
+	if (ret) {
+		GPU_LOG(DVFS_WARNING, DUMMY, 0u, 0u, "%s: invalid value\n", __func__);
+		return -ENOENT;
+	}
+
+	if (camera_ext_bts_scenario == 0 && platform->is_set_bts_camera_ext) {
+		bts_del_scenario(platform->bts_camera_ext_idx);
+		platform->is_set_bts_camera_ext = 0;
+	} else if (camera_ext_bts_scenario != 0 && platform->is_set_bts_camera_ext == 0) {
+		bts_add_scenario(platform->bts_camera_ext_idx);
+		platform->is_set_bts_camera_ext = 1;
+	}
+
+	return count;
+}
+
+static ssize_t show_camera_ext_bts_scenario(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	ssize_t ret = 0;
+	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
+
+	if (!platform)
+		return -ENODEV;
+
+	ret += snprintf(buf+ret, PAGE_SIZE-ret, "%d", platform->is_set_bts_camera_ext);
+
+	if (ret < PAGE_SIZE - 1) {
+		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
+	} else {
+		buf[PAGE_SIZE-2] = '\n';
+		buf[PAGE_SIZE-1] = '\0';
+		ret = PAGE_SIZE-1;
+	}
+
+	return ret;
+}
+#endif
+
 /** The sysfs file @c clock, fbdev.
  *
  * This is used for obtaining information about the mali t series operating clock & framebuffer address,
@@ -1777,7 +1768,6 @@ DEVICE_ATTR(throttling1, S_IRUGO|S_IWUSR, show_gpu_throttling1, set_gpu_throttli
 DEVICE_ATTR(throttling2, S_IRUGO|S_IWUSR, show_gpu_throttling2, set_gpu_throttling2);
 DEVICE_ATTR(throttling3, S_IRUGO|S_IWUSR, show_gpu_throttling3, set_gpu_throttling3);
 DEVICE_ATTR(throttling4, S_IRUGO|S_IWUSR, show_gpu_throttling4, set_gpu_throttling4);
-DEVICE_ATTR(throttling5, S_IRUGO|S_IWUSR, show_gpu_throttling5, set_gpu_throttling5);
 DEVICE_ATTR(tripping, S_IRUGO|S_IWUSR, show_gpu_tripping, set_gpu_tripping);
 DEVICE_ATTR(tmu, S_IRUGO|S_IWUSR, show_tmu, set_tmu_control);
 #ifdef CONFIG_CPU_THERMAL_IPA
@@ -1803,6 +1793,10 @@ DEVICE_ATTR(sustainable_status, S_IRUGO, show_sustainable_status, NULL);
 #ifdef CONFIG_MALI_SEC_CL_BOOST
 DEVICE_ATTR(cl_boost_disable, S_IRUGO|S_IWUSR, show_cl_boost_disable, set_cl_boost_disable);
 #endif
+#ifdef CONFIG_MALI_CAMERA_EXT_BTS
+DEVICE_ATTR(camera_ext_bts, S_IRUGO|S_IWUSR, show_camera_ext_bts_scenario, set_camera_ext_bts_scenario);
+#endif
+
 
 #ifdef CONFIG_MALI_DEBUG_KERNEL_SYSFS
 #ifdef CONFIG_MALI_DVFS
@@ -2159,14 +2153,6 @@ static ssize_t show_kernel_sysfs_gpu_model(struct kobject *kobj, struct kobj_att
 		unsigned id;
 		char *name;
 	} gpu_product_id_names[] = {
-		{ .id = GPU_ID_PI_T60X, .name = "Mali-T60x" },
-		{ .id = GPU_ID_PI_T62X, .name = "Mali-T62x" },
-		{ .id = GPU_ID_PI_T72X, .name = "Mali-T72x" },
-		{ .id = GPU_ID_PI_T76X, .name = "Mali-T76x" },
-		{ .id = GPU_ID_PI_T82X, .name = "Mali-T82x" },
-		{ .id = GPU_ID_PI_T83X, .name = "Mali-T83x" },
-		{ .id = GPU_ID_PI_T86X, .name = "Mali-T86x" },
-		{ .id = GPU_ID_PI_TFRX, .name = "Mali-T88x" },
 		{ .id = GPU_ID2_PRODUCT_TMIX >> GPU_ID_VERSION_PRODUCT_ID_SHIFT,
 		  .name = "Mali-G71" },
 		{ .id = GPU_ID2_PRODUCT_THEX >> GPU_ID_VERSION_PRODUCT_ID_SHIFT,
@@ -2177,7 +2163,6 @@ static ssize_t show_kernel_sysfs_gpu_model(struct kobject *kobj, struct kobj_att
 	u32 gpu_id;
 	unsigned product_id, product_id_mask;
 	unsigned i;
-	bool is_new_format;
 
 	kbdev = pkbdev;
 	if (!kbdev)
@@ -2185,25 +2170,68 @@ static ssize_t show_kernel_sysfs_gpu_model(struct kobject *kobj, struct kobj_att
 
 	gpu_id = kbdev->gpu_props.props.raw_props.gpu_id;
 	product_id = gpu_id >> GPU_ID_VERSION_PRODUCT_ID_SHIFT;
-	is_new_format = GPU_ID_IS_NEW_FORMAT(product_id);
-	product_id_mask =
-		(is_new_format ?
-			GPU_ID2_PRODUCT_MODEL :
-			GPU_ID_VERSION_PRODUCT_ID) >>
-		GPU_ID_VERSION_PRODUCT_ID_SHIFT;
+	product_id_mask = GPU_ID2_PRODUCT_MODEL >> GPU_ID_VERSION_PRODUCT_ID_SHIFT;
 
 	for (i = 0; i < ARRAY_SIZE(gpu_product_id_names); ++i) {
-		const struct gpu_product_id_name *p = &gpu_product_id_names[i];
+                const struct gpu_product_id_name *p = &gpu_product_id_names[i];
 
-		if ((GPU_ID_IS_NEW_FORMAT(p->id) == is_new_format) &&
-		    (p->id & product_id_mask) ==
-		    (product_id & product_id_mask)) {
-			product_name = p->name;
-			break;
-		}
-	}
+                if ((p->id & product_id_mask) ==
+                    (product_id & product_id_mask)) {
+                        product_name = p->name;
+                        break;
+                }
+        }
 
 	return scnprintf(buf, PAGE_SIZE, "%s\n", product_name);
+}
+
+
+static ssize_t show_kernel_sysfs_gpu_memory(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	struct list_head *entry;
+	const struct list_head *kbdev_list;
+	ssize_t ret = 0;
+	bool buffer_full = false;
+	const ssize_t buf_size = PAGE_SIZE;
+	const int padding = 100;
+
+	kbdev_list = kbase_device_get_list();
+	list_for_each(entry, kbdev_list) {
+		struct kbase_device *kbdev = NULL;
+		struct kbase_context *kctx;
+
+		kbdev = list_entry(entry, struct kbase_device, entry);
+
+		if (ret + padding > buf_size) {
+			buffer_full = true;
+			break;
+		}
+		/* output the total memory usage and cap for this device */
+		ret += scnprintf(buf + ret, buf_size - ret, "%-16s  %10u\n",
+				kbdev->devname,
+				atomic_read(&(kbdev->memdev.used_pages)));
+		mutex_lock(&kbdev->kctx_list_lock);
+		list_for_each_entry(kctx, &kbdev->kctx_list, kctx_list_link) {
+			if (ret + padding > buf_size) {
+				buffer_full = true;
+				break;
+			}
+
+			/* output the memory usage and cap for each kctx
+			* opened on this device */
+			ret += snprintf(buf + ret, buf_size - ret, "  %s-0x%p %10u\n",
+				"kctx",
+				kctx,
+				atomic_read(&(kctx->used_pages)));
+		}
+		mutex_unlock(&kbdev->kctx_list_lock);
+	}
+	kbase_device_put_list(kbdev_list);
+
+	if (buffer_full)
+		ret += scnprintf(buf + ret, buf_size - ret, "error: buffer is full\n");
+
+	return ret;
 }
 
 #if defined(CONFIG_MALI_DVFS) && defined(CONFIG_EXYNOS_THERMAL) && defined(CONFIG_GPU_THERMAL)
@@ -2280,6 +2308,9 @@ static struct kobj_attribute gpu_available_governor_attribute =
 static struct kobj_attribute gpu_model_attribute =
 	__ATTR(gpu_model, S_IRUGO, show_kernel_sysfs_gpu_model, NULL);
 
+static struct kobj_attribute gpu_memory_attribute =
+	__ATTR(gpu_memory, S_IRUGO, show_kernel_sysfs_gpu_memory, NULL);
+
 
 static struct attribute *attrs[] = {
 #ifdef CONFIG_MALI_DVFS
@@ -2298,6 +2329,7 @@ static struct attribute *attrs[] = {
 	&gpu_available_governor_attribute.attr,
 #endif /* #ifdef CONFIG_MALI_DVFS */
 	&gpu_model_attribute.attr,
+	&gpu_memory_attribute.attr,
 	NULL,
 };
 
@@ -2332,10 +2364,12 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [asv_table]\n");
 		goto out;
 	}
+
 	if (device_create_file(dev, &dev_attr_volt_table)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [volt_table]\n");
 		goto out;
 	}
+
 	if (device_create_file(dev, &dev_attr_dvfs_table)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [dvfs_table]\n");
 		goto out;
@@ -2415,6 +2449,7 @@ int gpu_create_sysfs_file(struct device *dev)
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [polling_speed]\n");
 		goto out;
 	}
+
 	if (device_create_file(dev, &dev_attr_throttling1)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [throttling1]\n");
 		goto out;
@@ -2432,11 +2467,6 @@ int gpu_create_sysfs_file(struct device *dev)
 
 	if (device_create_file(dev, &dev_attr_throttling4)) {
 		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [throttling4]\n");
-		goto out;
-	}
-
-	if (device_create_file(dev, &dev_attr_throttling5)) {
-		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [throttling5]\n");
 		goto out;
 	}
 
@@ -2509,6 +2539,13 @@ int gpu_create_sysfs_file(struct device *dev)
 	}
 #endif
 
+#ifdef CONFIG_MALI_CAMERA_EXT_BTS
+	if (device_create_file(dev, &dev_attr_camera_ext_bts)) {
+		GPU_LOG(DVFS_ERROR, DUMMY, 0u, 0u, "couldn't create sysfs file [camera_ext_bts]\n");
+		goto out;
+	}
+#endif
+
 #ifdef CONFIG_MALI_DEBUG_KERNEL_SYSFS
 	external_kobj = kobject_create_and_add("gpu", kernel_kobj);
 	if (!external_kobj) {
@@ -2534,8 +2571,8 @@ void gpu_remove_sysfs_file(struct device *dev)
 	device_remove_file(dev, &dev_attr_clock);
 	device_remove_file(dev, &dev_attr_vol);
 	device_remove_file(dev, &dev_attr_power_state);
-device_remove_file(dev, &dev_attr_volt_table);
 	device_remove_file(dev, &dev_attr_asv_table);
+	device_remove_file(dev, &dev_attr_volt_table);
 	device_remove_file(dev, &dev_attr_dvfs_table);
 	device_remove_file(dev, &dev_attr_time_in_state);
 	device_remove_file(dev, &dev_attr_utilization);
@@ -2557,7 +2594,6 @@ device_remove_file(dev, &dev_attr_volt_table);
 	device_remove_file(dev, &dev_attr_throttling2);
 	device_remove_file(dev, &dev_attr_throttling3);
 	device_remove_file(dev, &dev_attr_throttling4);
-	device_remove_file(dev, &dev_attr_throttling5);
 	device_remove_file(dev, &dev_attr_tripping);
 	device_remove_file(dev, &dev_attr_tmu);
 #ifdef CONFIG_CPU_THERMAL_IPA
@@ -2582,6 +2618,9 @@ device_remove_file(dev, &dev_attr_volt_table);
 #endif
 #ifdef CONFIG_MALI_SEC_CL_BOOST
 	device_remove_file(dev, &dev_attr_cl_boost_disable);
+#endif
+#ifdef CONFIG_MALI_CAMERA_EXT_BTS
+	device_remove_file(dev, &dev_attr_camera_ext_bts);
 #endif
 #ifdef CONFIG_MALI_DEBUG_KERNEL_SYSFS
 	kobject_put(external_kobj);
