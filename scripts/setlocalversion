@@ -1,0 +1,59 @@
+#!/bin/sh
+#
+# This scripts adds local version information from the version
+# control systems git, mercurial (hg) and subversion (svn).
+#
+# If something goes wrong, send a mail the kernel build mailinglist
+# (see MAINTAINERS) and CC Nico Schottelius
+# <nico-linuxsetlocalversion -at- schottelius.org>.
+#
+#
+
+usage() {
+	echo "Usage: $0 [srctree]" >&2
+	exit 1
+}
+
+srctree=.
+if test $# -gt 0; then
+	srctree=$1
+	shift
+fi
+if test $# -gt 0 -o ! -d "$srctree"; then
+	usage
+fi
+
+collect_files()
+{
+	local file res
+
+	for file; do
+		case "$file" in
+		*\~*)
+			continue
+			;;
+		esac
+		if test -e "$file"; then
+			res="$res$(cat "$file")"
+		fi
+	done
+	echo "$res"
+}
+
+if test -e include/config/auto.conf; then
+	. include/config/auto.conf
+else
+	echo "Error: kernelrelease not valid - run 'make prepare' to update it"
+	exit 1
+fi
+
+# localversion* files in the build and source directory
+res="$(collect_files localversion*)"
+if test ! "$srctree" -ef .; then
+	res="$res$(collect_files "$srctree"/localversion*)"
+fi
+
+# CONFIG_LOCALVERSION and LOCALVERSION (if set)
+res="${res}${CONFIG_LOCALVERSION}${LOCALVERSION}"
+
+echo "$res"
